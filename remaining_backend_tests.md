@@ -259,6 +259,30 @@ Resultado esperado:
 - `status: 404`
 - Error: `No hay nómina pendiente ese día.`
 
+## 14. Pruebas específicas de nómina semanal / quincenal
+
+Objetivo: validar que empleados con `Tipo_Pago` distinto a `DIARIO` reciben el pago fijo `Pago_diario` por día trabajado, incluso si su horario se registra por horas.
+
+Script de prueba:
+- Archivo: `weekly_quincenal_tests.js`
+- Fecha usada para `SEMANAL`: `2026-05-24`
+- Fecha usada para `QUINCENAL`: `2026-05-25`
+
+Flujo por cada tipo de pago:
+1. `POST /empleados` con `Tipo_Pago: SEmanal` o `QUINCENAL` y `Pago_diario` definido.
+2. `POST /asistencias` entrada a las 08:00.
+3. `PUT /asistencias/salida` a las 17:00.
+4. `GET /nominas/acumulado/:id_empleado`.
+5. `POST /nominas/incidencias` para aplicar una deducción o percepción.
+6. `GET /nominas/acumulado/:id_empleado` después de la incidencia.
+7. `POST /nominas/imprimir-y-pagar/:id_empleado`.
+8. `GET /nominas/acumulado/:id_empleado` después del pago.
+
+Resultado esperado:
+- Para `SEMANAL`: `sueldo_bruto` debe ser igual a `Pago_diario` (ej. `550`) y no multiplicarse por las horas.
+- Para `QUINCENAL`: `sueldo_bruto` debe ser igual a `Pago_diario` (ej. `560`) y no multiplicarse por las horas.
+- El pago debe liquidarse correctamente y dejar `recibos_pendientes: 0`.
+
 ## Cómo ejecutar el script
 
 1. Iniciar el servidor con `node server.js`
