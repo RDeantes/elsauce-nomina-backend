@@ -144,22 +144,33 @@ app.post("/asistencias", async (req, res) => {
         let descuentoRetardo = minutosRetardo > 10 ? (minutosRetardo - 10) * 1 : 0;
         const fechaBusqueda = new Date(fecha.split('T')[0] + "T00:00:00");
 
-        // Lógica segura de actualización/creación
-        let asistenciaDeHoy = await prisma.asistencias.findFirst({
+        const asistenciaAbierta = await prisma.asistencias.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_salida: null }
+        });
+
+        if (asistenciaAbierta) {
+            return res.status(400).json({ error: "Ya existe un periodo de asistencia abierto para este día. Marca salida antes de registrar una nueva entrada." });
+        }
+
+        const asistenciaPrevias = await prisma.asistencias.findFirst({
             where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda }
         });
 
-        let asistenciaActualizada;
-        if (asistenciaDeHoy) {
-            asistenciaActualizada = await prisma.asistencias.update({
-                where: { id_asistencia: asistenciaDeHoy.id_asistencia },
-                data: { hora_entrada, minutos_retardo: minutosRetardo, descuento_retardo: descuentoRetardo, estatus: "PRESENTE" }
-            });
-        } else {
-            asistenciaActualizada = await prisma.asistencias.create({
-                data: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada, minutos_retardo: minutosRetardo, descuento_retardo: descuentoRetardo, estatus: "PRESENTE" }
-            });
+        if (asistenciaPrevias) {
+            minutosRetardo = 0;
+            descuentoRetardo = 0;
         }
+
+        const asistenciaActualizada = await prisma.asistencias.create({
+            data: {
+                id_empleado: BigInt(id_empleado),
+                fecha: fechaBusqueda,
+                hora_entrada,
+                minutos_retardo: minutosRetardo,
+                descuento_retardo: descuentoRetardo,
+                estatus: "PRESENTE"
+            }
+        });
 
         res.json(convertirBigInt(asistenciaActualizada));
     } catch (error) {
@@ -174,13 +185,15 @@ app.post("/asistencias", async (req, res) => {
 app.put("/asistencias/salida", async (req, res) => {
     try {
         const { id_empleado, fecha, hora_salida } = req.body;
+        const fechaBusqueda = new Date(fecha.split('T')[0] + "T00:00:00");
         
         const asistencia = await prisma.asistencias.findFirst({
-            where: { id_empleado: BigInt(id_empleado), fecha: new Date(fecha) },
-            include: { empleados: true } 
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_salida: null },
+            orderBy: { id_asistencia: "desc" },
+            include: { empleados: true }
         });
 
-        if (!asistencia || asistencia.hora_salida) {
+        if (!asistencia) {
             return res.status(400).json({ error: "Asistencia no encontrada o salida ya marcada" });
         }
 
@@ -197,26 +210,56 @@ app.put("/asistencias/salida", async (req, res) => {
 
         // Calcular dinero
         const emp = asistencia.empleados;
-        let bruto = emp.Tipo_Pago?.toUpperCase() === "DIARIO" 
-                    ? Number(horasTrabajadas) * (emp.Pago_hora || 0) 
+        let bruto = emp.Tipo_Pago?.toUpperCase() === "DIARIO"
+                    ? Number(horasTrabajadas) * (emp.Pago_hora || 0)
                     : (emp.Pago_diario || 0);
 
         const neto = bruto - Number(asistencia.descuento_retardo || 0);
 
-        // Generar el recibo PENDIENTE
-        const recibo = await prisma.nominas.create({
-            data: {
-                id_empleado: BigInt(id_empleado),
-                fecha_inicio: new Date(fecha), 
-                fecha_fin: new Date(fecha),
-                dias_trabajados: 1, 
-                horas_totales: Number(horasTrabajadas),
-                sueldo_bruto: bruto,
-                total_descuentos_retardo: asistencia.descuento_retardo || 0,
-                total_neto: neto,
-                estatus: "PENDIENTE" // <-- Todos van a la alcancía
-            }
+        // Acumular/actualizar nómina diaria para la misma fecha
+        const nominaExistente = await prisma.nominas.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, estatus: "PENDIENTE" }
         });
+
+        let recibo;
+        if (nominaExistente) {
+            const horasTotalesAcumuladas = Number(nominaExistente.horas_totales || 0) + Number(horasTrabajadas);
+            const sueldoBrutoAcumulado = Number(nominaExistente.sueldo_bruto) + bruto;
+            const totalRetardosAcumulados = Number(nominaExistente.total_descuentos_retardo || 0) + Number(asistencia.descuento_retardo || 0);
+
+            const totalNetoActualizado = sueldoBrutoAcumulado
+                + Number(nominaExistente.bonos || 0)
+                + Number(nominaExistente.otras_percepciones || 0)
+                - totalRetardosAcumulados
+                - Number(nominaExistente.comidas || 0)
+                - Number(nominaExistente.otras_deducciones || 0);
+
+            recibo = await prisma.nominas.update({
+                where: { id_nomina: nominaExistente.id_nomina },
+                data: {
+                    horas_totales: horasTotalesAcumuladas,
+                    sueldo_bruto: sueldoBrutoAcumulado,
+                    total_descuentos_retardo: totalRetardosAcumulados,
+                    total_neto: totalNetoActualizado,
+                    dias_trabajados: nominaExistente.dias_trabajados || 1,
+                    fecha_fin: fechaBusqueda
+                }
+            });
+        } else {
+            recibo = await prisma.nominas.create({
+                data: {
+                    id_empleado: BigInt(id_empleado),
+                    fecha_inicio: fechaBusqueda,
+                    fecha_fin: fechaBusqueda,
+                    dias_trabajados: 1,
+                    horas_totales: Number(horasTrabajadas),
+                    sueldo_bruto: bruto,
+                    total_descuentos_retardo: asistencia.descuento_retardo || 0,
+                    total_neto: neto,
+                    estatus: "PENDIENTE"
+                }
+            });
+        }
 
         res.json(convertirBigInt({
             mensaje: "¡Salida marcada y nómina diaria generada en PENDIENTE!",
