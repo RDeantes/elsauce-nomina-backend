@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model asistencias {
+  id_empleado       BigInt    @default(autoincrement())
+  fecha             DateTime  @db.Date
+  estatus           String?   @default("PRESENTE") @db.VarChar(20)
+  hora_entrada      String?
+  hora_salida       String?
+  horas_trabajadas  Decimal?  @db.Decimal(5, 2)
+  minutos_retardo   Int?      @default(0)
+  descuento_retardo Decimal?  @default(0) @db.Decimal(10, 2)
+  created_at        DateTime? @default(now()) @db.Timestamp(6)
+  id_asistencia     Int       @id @default(autoincrement()) @db.SmallInt
+  empleados         empleados @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model departamentos {
+  id_departamento BigInt      @id @default(autoincrement())
+  nombre          String      @db.VarChar(100)
+  created_at      DateTime?   @default(now()) @db.Timestamp(6)
+  empleados       empleados[]
+}
+
+model descansos_empleados {
+  id_empleado  BigInt    @default(autoincrement())
+  dia_semana   Int?      @db.SmallInt
+  id_descansos Int       @id @default(autoincrement()) @db.SmallInt
+  empleados    empleados @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model empleados {
+  id_empleado             BigInt                @id @default(autoincrement())
+  nombre                  String                @db.VarChar(100)
+  apellido_paterno        String?               @db.VarChar(100)
+  apellido_materno        String?               @db.VarChar(100)
+  telefono                String?               @db.VarChar(20)
+  curp                    String?               @db.VarChar(150)
+  direccion               String?               @db.VarChar(300)
+  fecha_nacimiento        DateTime?             @db.Date
+  contacto_emerencia      String?               @db.VarChar(500)
+  fecha_ingreso           DateTime?             @db.Date
+  departamento_id         BigInt?
+  puesto_id               BigInt?
+  tipo_contrato           String?               @db.VarChar(150)
+  fecha_vigencia          DateTime?             @db.Date
+  nacionalidad            String?               @db.VarChar(30)
+  sexo                    String?               @db.VarChar(40)
+  activo                  Boolean?              @default(true)
+  created_at              DateTime?             @default(now()) @db.Timestamp(6)
+  Pago_hora               Float?
+  hora_programada_entrada String?
+  Tipo_Pago               String?
+  Pago_diario             Float?                @db.Real
+  asistencias             asistencias[]
+  descansos_empleados     descansos_empleados[]
+  departamentos           departamentos?        @relation(fields: [departamento_id], references: [id_departamento], onDelete: NoAction, onUpdate: NoAction)
+  puestos                 puestos?              @relation(fields: [puesto_id], references: [id_puestos], onDelete: NoAction, onUpdate: NoAction)
+  incidencias             incidencias[]
+  nominas                 nominas[]
+}
+
+model incidencias {
+  id_empleado    BigInt    @default(autoincrement())
+  tipo           String    @db.VarChar(50)
+  descripcion    String?
+  fecha          DateTime  @db.Date
+  created_at     DateTime? @default(now()) @db.Timestamp(6)
+  id_incidencias Int       @id @default(autoincrement()) @db.SmallInt
+  empleados      empleados @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model puestos {
+  id_puestos BigInt      @id @default(autoincrement())
+  nombre     String      @db.VarChar(100)
+  created_at DateTime?   @default(now()) @db.Timestamp(6)
+  empleados  empleados[]
+}
+
+model nominas {
+  id_nomina                Int       @id @default(autoincrement())
+  id_empleado              BigInt
+  fecha_emision            DateTime? @default(now()) @db.Timestamp(6)
+  fecha_inicio             DateTime  @db.Date
+  fecha_fin                DateTime  @db.Date
+  dias_trabajados          Int?      @default(0)
+  horas_totales            Decimal?  @default(0) @db.Decimal
+  sueldo_bruto             Decimal   @db.Decimal
+  total_descuentos_retardo Decimal?  @default(0) @db.Decimal
+  comidas                  Float?    @default(0) @db.Real
+  otras_deducciones        Float?    @default(0) @db.Real
+  total_neto               Decimal   @db.Decimal
+  estatus                  String?   @default("PENDIENTE") @db.VarChar
+  bonos                    Int?      @default(0)
+  otras_percepciones       Float?    @default(0) @db.Real
+  empleados                empleados @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction)
+}
