@@ -11,6 +11,11 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.get("/", (req, res) => {
+    res.json({
+        mensaje: "Backend funcionando 🚀"
+    });
+});
 
 // ============================================================
 // 1. FUNCIONES DE AYUDA (HELPERS)
@@ -48,7 +53,8 @@ function convertirHoraAMinutos(hora) {
 // ============================================================
 
 /**
- * CRON: Pre-carga diaria (01:00 AM)
+ * CRON: Pre-carga diaria (01:00 AM   (01***))
+ * (*****)PARA CARGAR CADA MINUTO
  * Le asigna FALTA a los que deben trabajar y DESCANSO a los que tienen su día libre.
  */
 cron.schedule('0 1 * * *', async () => {
@@ -102,22 +108,208 @@ app.get("/empleados", async (req, res) => {
 });
 
 app.post("/empleados", async (req, res) => {
+
     try {
+
         const nuevoEmpleado = await prisma.empleados.create({
+
             data: {
-                ...req.body,
-                fecha_nacimiento: req.body.fecha_nacimiento ? new Date(req.body.fecha_nacimiento) : null,
-                fecha_ingreso: req.body.fecha_ingreso ? new Date(req.body.fecha_ingreso) : null,
-                fecha_vigencia: req.body.fecha_vigencia ? new Date(req.body.fecha_vigencia) : null,
-                departamento_id: req.body.departamento_id ? BigInt(req.body.departamento_id) : null,
-                puesto_id: req.body.puesto_id ? BigInt(req.body.puesto_id) : null,
-                activo: true
+
+                // INFORMACION PERSONAL
+                nombre: req.body.nombre,
+                apellido_paterno: req.body.apellido_paterno,
+                apellido_materno: req.body.apellido_materno,
+                telefono: req.body.telefono || null,
+                curp: req.body.curp || null,
+                direccion: req.body.direccion || null,
+                contacto_emerencia: req.body.contacto_emerencia || null,
+                nacionalidad: req.body.nacionalidad || null,
+                sexo: req.body.sexo || null,
+
+                // FECHAS
+                fecha_nacimiento: req.body.fecha_nacimiento
+                    ? new Date(req.body.fecha_nacimiento)
+                    : null,
+
+                fecha_ingreso: req.body.fecha_ingreso
+                    ? new Date(req.body.fecha_ingreso)
+                    : null,
+
+                fecha_vigencia: req.body.fecha_vigencia
+                    ? new Date(req.body.fecha_vigencia)
+                    : null,
+
+                // RELACIONES
+                departamento_id: req.body.departamento_id
+                    ? BigInt(req.body.departamento_id)
+                    : null,
+
+                puesto_id: req.body.puesto_id
+                    ? BigInt(req.body.puesto_id)
+                    : null,
+
+                // CONTRATO
+                tipo_contrato: req.body.tipo_contrato || null,
+
+                // ESTATUS
+                activo: req.body.activo === "true"
+                    ? true
+                    : false,
+
+                // PAGOS
+                Tipo_Pago: req.body.Tipo_Pago || null,
+
+                Pago_hora: req.body.Pago_hora
+                    ? parseFloat(req.body.Pago_hora)
+                    : null,
+
+                Pago_diario: req.body.Pago_diario
+                    ? parseFloat(req.body.Pago_diario)
+                    : null,
+
+                hora_programada_entrada:
+                    req.body.hora_programada_entrada || null,
+
             }
+
         });
+
         res.json(convertirBigInt(nuevoEmpleado));
+
     } catch (error) {
-        res.status(500).json({ error: "Error creando empleado" });
+
+        console.log(error);
+
+        res.status(500).json({
+            error: "Error creando empleado",
+            detalle: error.message
+        });
+
     }
+
+});
+
+// ==========================================
+// ACTUALIZAR EMPLEADO
+// ==========================================
+
+app.put("/empleados/:id", async (req, res) => {
+
+    try {
+
+        const empleadoActualizado =
+            await prisma.empleados.update({
+
+                where: {
+                    id_empleado: BigInt(req.params.id),
+                },
+
+                data: {
+
+                    ...req.body,
+
+                    fecha_nacimiento:
+                        req.body.fecha_nacimiento
+                            ? new Date(req.body.fecha_nacimiento)
+                            : null,
+
+                    fecha_ingreso:
+                        req.body.fecha_ingreso
+                            ? new Date(req.body.fecha_ingreso)
+                            : null,
+
+                    fecha_vigencia:
+                        req.body.fecha_vigencia
+                            ? new Date(req.body.fecha_vigencia)
+                            : null,
+
+                    departamento_id:
+                        req.body.departamento_id
+                            ? BigInt(req.body.departamento_id)
+                            : null,
+
+                    puesto_id:
+                        req.body.puesto_id
+                            ? BigInt(req.body.puesto_id)
+                            : null,
+
+                    Pago_hora:
+                        req.body.Pago_hora
+                            ? parseFloat(req.body.Pago_hora)
+                            : null,
+
+                    Pago_diario:
+                        req.body.Pago_diario
+                            ? parseFloat(req.body.Pago_diario)
+                            : null,
+
+                    activo:
+                        Boolean(req.body.activo),
+
+                },
+
+            });
+
+        res.json(convertirBigInt(empleadoActualizado));
+
+    } catch (error) {
+
+        console.log(error);
+
+        res.status(500).json({
+            error: "Error actualizando empleado"
+        });
+
+    }
+
+});
+
+// ==========================================
+// OBTENER ASISTENCIAS POR FECHA
+// ==========================================
+
+app.get("/asistencias", async (req, res) => {
+
+    try {
+
+        const { fecha } = req.query;
+
+        const asistencias =
+            await prisma.asistencias.findMany({
+
+                where: fecha
+                    ? {
+                        fecha: {
+                            gte: new Date(fecha + "T00:00:00"),
+                            lte: new Date(fecha + "T23:59:59"),
+                        },
+                    }
+                    : undefined,
+
+                include: {
+                    empleados: true,
+                },
+
+                orderBy: {
+                    hora_entrada: "asc",
+                },
+
+            });
+
+        res.json(
+            convertirBigInt(asistencias)
+        );
+
+    } catch (error) {
+
+        console.log(error);
+
+        res.status(500).json({
+            error: "Error obteniendo asistencias"
+        });
+
+    }
+
 });
 
 // ============================================================
@@ -534,7 +726,7 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
 // ============================================================
 // 6. LANZAMIENTO DEL SERVIDOR
 // ============================================================
-const PORT = 3000;
+const PORT = 3001;
 app.listen(PORT, () => {
     console.log(`
     🚀 Servidor de Nómina y Asistencia corriendo
