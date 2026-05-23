@@ -1,3 +1,4 @@
+const QRCode = require("qrcode");
 const express = require("express");
 const cors = require("cors");
 const { PrismaClient } = require("@prisma/client");
@@ -48,6 +49,32 @@ function convertirHoraAMinutos(hora) {
     return (parseInt(h) * 60) + parseInt(m);
 }
 
+
+
+app.get("/empleados/:id/qr", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Contenido del QR
+    const contenido = `id_empleado=${id}`;
+
+    // Generar QR en base64
+    const qr = await QRCode.toDataURL(contenido);
+
+    res.json({
+      ok: true,
+      qr,
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      ok: false,
+      mensaje: "Error generando QR",
+    });
+  }
+});
 // ============================================================
 // 2. TAREAS AUTOMÁTICAS (CRON JOBS)
 // ============================================================
