@@ -363,33 +363,137 @@ app.post("/asistencias", async (req, res) => {
         let descuentoRetardo = minutosRetardo > 10 ? (minutosRetardo - 10) * 1 : 0;
         const fechaBusqueda = new Date(fecha.split('T')[0] + "T00:00:00");
 
-        const asistenciaAbierta = await prisma.asistencias.findFirst({
-            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_salida: null }
-        });
+        const asistenciaAbierta =
+    await prisma.asistencias.findFirst({
+
+        where: {
+
+            id_empleado:
+                BigInt(id_empleado),
+
+            fecha:
+                fechaBusqueda,
+
+            hora_salida:
+                null,
+
+            hora_entrada: {
+                not: null
+            }
+
+        }
+
+    });
 
         if (asistenciaAbierta) {
             return res.status(400).json({ error: "Ya existe un periodo de asistencia abierto para este día. Marca salida antes de registrar una nueva entrada." });
         }
 
-        const asistenciaPrevias = await prisma.asistencias.findFirst({
-            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda }
-        });
+        const asistenciaPrevias =
+    await prisma.asistencias.findFirst({
+
+        where: {
+
+            id_empleado:
+                BigInt(id_empleado),
+
+            fecha:
+                fechaBusqueda,
+
+            hora_entrada: {
+                not: null
+            }
+
+        }
+
+    });
 
         if (asistenciaPrevias) {
             minutosRetardo = 0;
             descuentoRetardo = 0;
         }
 
-        const asistenciaActualizada = await prisma.asistencias.create({
-            data: {
-                id_empleado: BigInt(id_empleado),
-                fecha: fechaBusqueda,
-                hora_entrada,
-                minutos_retardo: minutosRetardo,
-                descuento_retardo: descuentoRetardo,
-                estatus: "PRESENTE"
+const asistenciaPrecargada =
+    await prisma.asistencias.findFirst({
+
+        where: {
+
+            id_empleado:
+                BigInt(id_empleado),
+
+            fecha:
+                fechaBusqueda,
+
+            estatus: {
+                in: [
+                    "FALTA",
+                    "DESCANSO",
+                    "JUSTIFICADA"
+                ]
             }
+
+        }
+
+    });
+
+        let asistenciaActualizada;
+
+if (asistenciaPrecargada) {
+
+    asistenciaActualizada =
+        await prisma.asistencias.update({
+
+            where: {
+                id_asistencia:
+                    asistenciaPrecargada.id_asistencia
+            },
+
+            data: {
+
+                hora_entrada,
+
+                minutos_retardo:
+                    minutosRetardo,
+
+                descuento_retardo:
+                    descuentoRetardo,
+
+                estatus:
+                    "PRESENTE"
+
+            }
+
         });
+
+} else {
+
+    asistenciaActualizada =
+        await prisma.asistencias.create({
+
+            data: {
+
+                id_empleado:
+                    BigInt(id_empleado),
+
+                fecha:
+                    fechaBusqueda,
+
+                hora_entrada,
+
+                minutos_retardo:
+                    minutosRetardo,
+
+                descuento_retardo:
+                    descuentoRetardo,
+
+                estatus:
+                    "PRESENTE"
+
+            }
+
+        });
+
+}
 
         res.json(convertirBigInt(asistenciaActualizada));
     } catch (error) {
