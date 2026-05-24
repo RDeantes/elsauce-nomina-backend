@@ -857,11 +857,13 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
 // ============================================================
 // 6. LANZAMIENTO DEL SERVIDOR
 // ============================================================
-const PORT = 3001;
+const PORT =
+    process.env.PORT || 3001;
+
 app.listen(PORT, () => {
-    console.log(`
-    🚀 Servidor de Nómina y Asistencia corriendo
-    📍 Puerto: ${PORT}
-    📅 Cron Job activo (Carga diaria 01:00 AM)
-    `);
+
+    console.log(
+        `Servidor corriendo en puerto ${PORT}`
+    );
+
 });
