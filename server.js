@@ -865,7 +865,21 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
 // ============================================================
 
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor de nómina encendido y escuchando en el puerto ${PORT}`);
-});
+// ... configuraciones previas ...
+
+async function startServer() {
+    try {
+        await prisma.$connect();
+        console.log("Conexión a DB exitosa");
+        
+        const PORT = process.env.PORT || 3000;
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`Servidor corriendo en el puerto ${PORT}`);
+        });
+    } catch (error) {
+        console.error("Error al conectar a DB:", error);
+        process.exit(1); // Esto ayuda a Railway a saber que algo salió mal
+    }
+}
+
+startServer();
