@@ -10,7 +10,10 @@ const fs = require("fs");
 const prisma = new PrismaClient();
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://elsauce-nomina-frontend-production.up.railway.app'],
+  credentials: true
+}));
 app.use(express.json());
 app.get("/", (req, res) => {
     res.json({
