@@ -11,9 +11,12 @@ const prisma = new PrismaClient();
 const app = express();
 
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://elsauce-nomina-frontend-production.up.railway.app'],
+  origin: ['http://localhost:3000', 'https://elsauce-nomina-frontend-production.up.railway.app',],
   credentials: true
 }));
+
+
+
 app.use(express.json());
 app.get("/", (req, res) => {
     res.json({
@@ -860,13 +863,9 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
 // ============================================================
 // 6. LANZAMIENTO DEL SERVIDOR
 // ============================================================
-const PORT =
-    process.env.PORT || 3001;
 
-app.listen(PORT, () => {
 
-    console.log(
-        `Servidor corriendo en puerto ${PORT}`
-    );
-
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor de nómina encendido y escuchando en el puerto ${PORT}`);
 });
