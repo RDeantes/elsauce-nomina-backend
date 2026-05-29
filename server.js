@@ -7,11 +7,21 @@ const cron = require("node-cron");
 const { Document, Packer, Paragraph, TextRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle } = require("docx");
 const fs = require("fs");
 
+
+
+
+
+
+
 const prisma = new PrismaClient();
 const app = express();
 
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://elsauce-nomina-frontend-production.up.railway.app',],
+  origin: [
+    'http://localhost:3000', 
+    'https://elsauce-nomina-frontend-production.up.railway.app',
+    'https://elsauce-nomina-frontend-production.up.railway.app/' // <-- Agregamos esta con la barra diagonal por si acaso
+  ],
   credentials: true
 }));
 
