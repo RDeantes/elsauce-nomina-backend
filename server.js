@@ -537,33 +537,44 @@ app.put("/asistencias/salida", async (req, res) => {
             return res.status(400).json({ error: "Asistencia no encontrada o salida ya marcada" });
         }
 
-        // Calcular horas
+        // 1. Calcular horas trabajadas
         const entradaMin = convertirHoraAMinutos(asistencia.hora_entrada);
         const salidaMin = convertirHoraAMinutos(hora_salida);
-        const horasTrabajadas = (Math.max(0, salidaMin - entradaMin) / 60).toFixed(2);
+        let horasCalculadas = Math.max(0, salidaMin - entradaMin) / 60;
 
-        // Actualizar Asistencia
+        // 2. APLICAR TOPE PARA REPARTIDORES (ID 10)
+        // Tope: 11 horas con 40 minutos = 11.666... horas
+        if (asistencia.empleados.puesto_id === BigInt(10)) {
+            const TOPE_REPARTIDOR = 11 + (40 / 60); 
+            if (horasCalculadas > TOPE_REPARTIDOR) {
+                horasCalculadas = TOPE_REPARTIDOR;
+            }
+        }
+
+        const horasTrabajadas = Number(horasCalculadas.toFixed(2));
+
+        // 3. Actualizar Asistencia
         await prisma.asistencias.update({
             where: { id_asistencia: asistencia.id_asistencia },
-            data: { hora_salida, horas_trabajadas: Number(horasTrabajadas) }
+            data: { hora_salida, horas_trabajadas: horasTrabajadas }
         });
 
-        // Calcular dinero
+        // 4. Calcular dinero
         const emp = asistencia.empleados;
         let bruto = emp.Tipo_Pago?.toUpperCase() === "DIARIO"
-                    ? Number(horasTrabajadas) * (emp.Pago_hora || 0)
-                    : (emp.Pago_diario || 0);
+                    ? horasTrabajadas * (emp.Pago_hora || 0) // Si paga por hora
+                    : (emp.Pago_diario || 0);               // Si paga fijo diario
 
         const neto = bruto - Number(asistencia.descuento_retardo || 0);
 
-        // Acumular/actualizar nómina diaria para la misma fecha
+        // 5. Acumular en nómina
         const nominaExistente = await prisma.nominas.findFirst({
             where: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, estatus: "PENDIENTE" }
         });
 
         let recibo;
         if (nominaExistente) {
-            const horasTotalesAcumuladas = Number(nominaExistente.horas_totales || 0) + Number(horasTrabajadas);
+            const horasTotalesAcumuladas = Number(nominaExistente.horas_totales || 0) + horasTrabajadas;
             const sueldoBrutoAcumulado = Number(nominaExistente.sueldo_bruto) + bruto;
             const totalRetardosAcumulados = Number(nominaExistente.total_descuentos_retardo || 0) + Number(asistencia.descuento_retardo || 0);
 
@@ -592,7 +603,7 @@ app.put("/asistencias/salida", async (req, res) => {
                     fecha_inicio: fechaBusqueda,
                     fecha_fin: fechaBusqueda,
                     dias_trabajados: 1,
-                    horas_totales: Number(horasTrabajadas),
+                    horas_totales: horasTrabajadas,
                     sueldo_bruto: bruto,
                     total_descuentos_retardo: asistencia.descuento_retardo || 0,
                     total_neto: neto,
@@ -602,16 +613,15 @@ app.put("/asistencias/salida", async (req, res) => {
         }
 
         res.json(convertirBigInt({
-            mensaje: "¡Salida marcada y nómina diaria generada en PENDIENTE!",
+            mensaje: "¡Salida marcada! (Tope aplicado si corresponde)",
             horas_registradas: horasTrabajadas,
             nomina_generada: recibo
         }));
     } catch (error) {
-        console.error("Error al registrar salida y nómina:", error);
+        console.error("Error al registrar salida:", error);
         res.status(500).json({ error: "Error en registro de salida" });
     }
 });
-
 /**
  * JUSTIFICAR FALTA: Limpia el expediente de RH, no genera pago.
  */
