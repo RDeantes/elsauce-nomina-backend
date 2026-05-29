@@ -20,11 +20,12 @@ app.use(cors({
   origin: [
     'http://localhost:3000', 
     'https://elsauce-nomina-frontend-production.up.railway.app',
-    'https://elsauce-nomina-frontend-production.up.railway.app/' // <-- Agregamos esta con la barra diagonal por si acaso
+    'https://elsauce-nomina-frontend-production.up.railway.app/' // <-- Agregada con barra diagonal al final
   ],
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // <-- Le decimos explícitamente qué métodos permitir
+  allowedHeaders: ['Content-Type', 'Authorization'] // <-- Permitimos las cabeceras estándar de Axios
 }));
-
 
 
 app.use(express.json());
