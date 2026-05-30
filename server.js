@@ -544,10 +544,13 @@ app.put("/asistencias/salida", async (req, res) => {
 
         // 2. APLICAR TOPE PARA REPARTIDORES (ID 10)
         // Tope: 11 horas con 40 minutos = 11.666... horas
+        // 2. APLICAR TOPE PARA REPARTIDORES
+        // Comparamos directamente contra el ID del puesto 10
         if (asistencia.empleados.puesto_id === BigInt(10)) {
-            const TOPE_REPARTIDOR = 11 + (40 / 60); 
+            const TOPE_REPARTIDOR = 11 + (40 / 60); // 11.666... horas
             if (horasCalculadas > TOPE_REPARTIDOR) {
                 horasCalculadas = TOPE_REPARTIDOR;
+                console.log("⚠️ Tope de repartidor aplicado");
             }
         }
 
