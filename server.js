@@ -882,11 +882,7 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
             data: { estatus: "PAGADO" }
         });
 
-        res.json({
-            mensaje: "Pago liquidado y recibo generado exitosamente.",
-            archivo_generado: nombreArchivo,
-            total_pagado: totalNeto.toFixed(2)
-        });
+        
 
     } catch (error) {
         console.error("Error imprimiendo formato:", error);
