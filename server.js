@@ -865,7 +865,17 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
 
         const nombreArchivo = `Recibo_${empleado.nombre}_${Date.now()}.docx`;
         const buffer = await Packer.toBuffer(doc);
-        fs.writeFileSync(nombreArchivo, buffer);
+    
+
+        await prisma.nominas.updateMany({
+            where: { id_empleado: BigInt(id_empleado), estatus: "PENDIENTE" },
+            data: { estatus: "PAGADO" }
+        });
+
+        // Configuración para que el navegador entienda que es un archivo de Word
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename=Recibo_${empleado.nombre}.docx`);
+        res.send(buffer);
 
         await prisma.nominas.updateMany({
             where: { id_empleado: BigInt(id_empleado), estatus: "PENDIENTE" },
