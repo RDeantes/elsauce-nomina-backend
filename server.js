@@ -223,8 +223,19 @@ app.post("/asistencias/webhook", async (req, res) => {
         });
 
         if (asistenciaCerrada) {
-            console.log(`ℹ️  Empleado ${id_empleado} ya tiene turno cerrado el ${fecha}, marcada ignorada.`);
-            return res.status(200).json({ ok: true, mensaje: "Turno ya cerrado, marcada ignorada" });
+            // Turno cerrado — el empleado regresó, abrir un nuevo registro sin descuento de retardo
+            console.log(`🔄 Empleado ${id_empleado} regresó después de turno cerrado, abriendo nuevo registro.`);
+            await prisma.asistencias.create({
+                data: {
+                    id_empleado:       BigInt(id_empleado),
+                    fecha:             fechaBusqueda,
+                    hora_entrada:      hora,
+                    minutos_retardo:   0,
+                    descuento_retardo: 0,
+                    estatus:           "PRESENTE",
+                },
+            });
+            return res.status(200).json({ ok: true, accion: "ENTRADA", mensaje: "Nuevo periodo abierto por regreso" });
         }
 
         // 4. ¿Tiene entrada abierta (sin salida todavía)?
