@@ -399,6 +399,20 @@ app.post("/asistencias", async (req, res) => {
             return res.status(400).json({ error: "Empleado no encontrado o sin horario asignado" });
         }
 
+        const fechaBusqueda = new Date(fecha.split('T')[0] + "T00:00:00");
+        const ultimaMarca = await prisma.asistencias.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada: { not: null } },
+            orderBy: { id_asistencia: 'desc' }
+        });
+
+        if (ultimaMarca) {
+            const minUltima = convertirHoraAMinutos(ultimaMarca.hora_entrada);
+            const minActual = convertirHoraAMinutos(hora_entrada);
+            if (Math.abs(minActual - minUltima) < 1) {
+                return res.status(200).json({ mensaje: "Marcación ignorada: repetida en menos de 1 minuto." });
+            }
+        }
+
         const entradaReal = convertirHoraAMinutos(hora_entrada);
         const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada);
         let minutosRetardo = Math.max(0, entradaReal - entradaProg);
