@@ -249,6 +249,14 @@ app.post("/asistencias/webhook", async (req, res) => {
         });
 
         if (asistenciaAbierta) {
+            // Ignorar si la marcada llega menos de 2 minutos después de la entrada (doble marcada accidental)
+            const entradaMinCheck = convertirHoraAMinutos(asistenciaAbierta.hora_entrada);
+            const marcaMinCheck   = convertirHoraAMinutos(hora);
+            if (Math.abs(marcaMinCheck - entradaMinCheck) < 2) {
+                console.log(`⏭️  Marcación ignorada (doble entrada): empleado ${id_empleado} marcó ${hora}, entrada previa ${asistenciaAbierta.hora_entrada}`);
+                return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Marcación ignorada: menos de 2 minutos desde la entrada." });
+            }
+
             // ── REGISTRAR SALIDA ──────────────────────────────
             console.log(`🚪 Salida: empleado ${id_empleado} a las ${hora}`);
 
