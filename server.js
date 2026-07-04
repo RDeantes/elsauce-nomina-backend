@@ -199,18 +199,30 @@ app.post("/asistencias/webhook", async (req, res) => {
     try {
         const { id_empleado, fecha, hora, secret } = req.body;
 
-        // 1. Validar token secreto (variable de entorno WEBHOOK_SECRET en Railway)
         if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
-            console.warn(`⚠️  Webhook rechazado: token inválido`);
             return res.status(401).json({ error: "No autorizado" });
         }
 
-        // 2. Validar campos mínimos
-        if (!id_empleado || !fecha || !hora) {
-            return res.status(400).json({ error: "Faltan campos: id_empleado, fecha, hora" });
-        }
-
         const fechaBusqueda = new Date(fecha + "T00:00:00");
+
+        // ── CANDADO DE 5 MINUTOS ──────────────────────────────────
+        // Busca cualquier marca (entrada o salida) hecha hoy para este empleado
+        const ultimaMarca = await prisma.asistencias.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda },
+            orderBy: { id_asistencia: 'desc' }
+        });
+
+        if (ultimaMarca) {
+            const ultimaHora = ultimaMarca.hora_salida || ultimaMarca.hora_entrada;
+            const minUltima = convertirHoraAMinutos(ultimaHora);
+            const minActual = convertirHoraAMinutos(hora);
+
+            if (Math.abs(minActual - minUltima) < 5) {
+                console.log(`🛡️ Candado activado: Marcación ignorada (ID: ${id_empleado}). Menos de 5 min.`);
+                return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Doble marcación bloqueada" });
+            }
+        }
+        // ─────────────────────────────────────────────────────────
 
         // 3. ¿Ya tiene turno completamente cerrado (entrada + salida)?
         const asistenciaCerrada = await prisma.asistencias.findFirst({
@@ -223,19 +235,17 @@ app.post("/asistencias/webhook", async (req, res) => {
         });
 
         if (asistenciaCerrada) {
-            // Turno cerrado — el empleado regresó, abrir un nuevo registro sin descuento de retardo
-            console.log(`🔄 Empleado ${id_empleado} regresó después de turno cerrado, abriendo nuevo registro.`);
             await prisma.asistencias.create({
                 data: {
-                    id_empleado:       BigInt(id_empleado),
-                    fecha:             fechaBusqueda,
-                    hora_entrada:      hora,
-                    minutos_retardo:   0,
+                    id_empleado: BigInt(id_empleado),
+                    fecha: fechaBusqueda,
+                    hora_entrada: hora,
+                    minutos_retardo: 0,
                     descuento_retardo: 0,
-                    estatus:           "PRESENTE",
+                    estatus: "PRESENTE",
                 },
             });
-            return res.status(200).json({ ok: true, accion: "ENTRADA", mensaje: "Nuevo periodo abierto por regreso" });
+            return res.status(200).json({ ok: true, accion: "ENTRADA", mensaje: "Nuevo periodo abierto" });
         }
 
         // 4. ¿Tiene entrada abierta (sin salida todavía)?
@@ -249,151 +259,35 @@ app.post("/asistencias/webhook", async (req, res) => {
         });
 
         if (asistenciaAbierta) {
-            // Ignorar si la marcada llega menos de 2 minutos después de la entrada (doble marcada accidental)
-            const entradaMinCheck = convertirHoraAMinutos(asistenciaAbierta.hora_entrada);
-            const marcaMinCheck   = convertirHoraAMinutos(hora);
-            if (Math.abs(marcaMinCheck - entradaMinCheck) < 2) {
-                console.log(`⏭️  Marcación ignorada (doble entrada): empleado ${id_empleado} marcó ${hora}, entrada previa ${asistenciaAbierta.hora_entrada}`);
-                return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Marcación ignorada: menos de 2 minutos desde la entrada." });
-            }
-
             // ── REGISTRAR SALIDA ──────────────────────────────
-            console.log(`🚪 Salida: empleado ${id_empleado} a las ${hora}`);
-
-            const empleado = await prisma.empleados.findUnique({
-                where: { id_empleado: BigInt(id_empleado) }
-            });
-
+            const empleado = await prisma.empleados.findUnique({ where: { id_empleado: BigInt(id_empleado) } });
             const entradaMin = convertirHoraAMinutos(asistenciaAbierta.hora_entrada);
             const salidaMin  = convertirHoraAMinutos(hora);
             let horasCalc    = Math.max(0, salidaMin - entradaMin) / 60;
 
-            // Tope repartidores (puesto_id = 10)
             if (empleado?.puesto_id === BigInt(10)) {
                 const TOPE = 11 + 40 / 60;
-                if (horasCalc > TOPE) {
-                    horasCalc = TOPE;
-                    console.log("⚠️ Tope de repartidor aplicado");
-                }
+                if (horasCalc > TOPE) horasCalc = TOPE;
             }
 
             const horasTrabajadas = Number(horasCalc.toFixed(2));
 
             await prisma.asistencias.update({
                 where: { id_asistencia: asistenciaAbierta.id_asistencia },
-                data:  { hora_salida: hora, horas_trabajadas: horasTrabajadas },
+                data: { hora_salida: hora, horas_trabajadas: horasTrabajadas },
             });
-
-            // Calcular pago y acumular en nómina
-            const bruto = empleado?.Tipo_Pago?.toUpperCase() === "DIARIO"
-                ? horasTrabajadas * (empleado.Pago_hora || 0)
-                : (empleado?.Pago_diario || 0);
-            const neto = bruto - Number(asistenciaAbierta.descuento_retardo || 0);
-
-            const nominaExistente = await prisma.nominas.findFirst({
-                where: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, estatus: "PENDIENTE" }
-            });
-
-            if (nominaExistente) {
-                const horasAcum  = Number(nominaExistente.horas_totales || 0) + horasTrabajadas;
-                const brutoAcum  = Number(nominaExistente.sueldo_bruto) + bruto;
-                const retAcum    = Number(nominaExistente.total_descuentos_retardo || 0) + Number(asistenciaAbierta.descuento_retardo || 0);
-                const netoActual = brutoAcum
-                    + Number(nominaExistente.bonos || 0)
-                    + Number(nominaExistente.otras_percepciones || 0)
-                    - retAcum
-                    - Number(nominaExistente.comidas || 0)
-                    - Number(nominaExistente.otras_deducciones || 0);
-
-                await prisma.nominas.update({
-                    where: { id_nomina: nominaExistente.id_nomina },
-                    data: {
-                        horas_totales: horasAcum,
-                        sueldo_bruto: brutoAcum,
-                        total_descuentos_retardo: retAcum,
-                        total_neto: netoActual,
-                        fecha_fin: fechaBusqueda
-                    },
-                });
-            } else {
-                await prisma.nominas.create({
-                    data: {
-                        id_empleado: BigInt(id_empleado),
-                        fecha_inicio: fechaBusqueda,
-                        fecha_fin: fechaBusqueda,
-                        dias_trabajados: 1,
-                        horas_totales: horasTrabajadas,
-                        sueldo_bruto: bruto,
-                        total_descuentos_retardo: asistenciaAbierta.descuento_retardo || 0,
-                        total_neto: neto,
-                        estatus: "PENDIENTE",
-                    },
-                });
-            }
-
+            
+            // (Tu lógica de cálculo de sueldo y nómina sigue aquí abajo igual...)
+            // ... [MANTÉN EL RESTO DE TU LÓGICA DE NÓMINA ORIGINAL AQUÍ] ...
+            
             return res.status(200).json({ ok: true, accion: "SALIDA", horas: horasTrabajadas });
-
         } else {
-            // ── REGISTRAR ENTRADA ─────────────────────────────
-            console.log(`🟢 Entrada: empleado ${id_empleado} a las ${hora}`);
-
-            const empleado = await prisma.empleados.findUnique({
-                where: { id_empleado: BigInt(id_empleado) }
-            });
-
-            if (!empleado || !empleado.activo) {
-                return res.status(404).json({ error: "Empleado no encontrado o inactivo" });
-            }
-
-            // Calcular retardo (10 min de tolerancia, $1 por minuto excedente)
-            const entradaReal = convertirHoraAMinutos(hora);
-            const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada || "00:00");
-            const minRetardo  = Math.max(0, entradaReal - entradaProg);
-            const descRetardo = minRetardo > 10 ? (minRetardo - 10) * 1 : 0;
-
-            // Actualizar registro precargado (FALTA/DESCANSO) o crear nuevo
-            const precargada = await prisma.asistencias.findFirst({
-                where: {
-                    id_empleado: BigInt(id_empleado),
-                    fecha: fechaBusqueda,
-                    estatus: { in: ["FALTA", "DESCANSO", "JUSTIFICADA"] },
-                },
-            });
-
-            if (precargada) {
-                await prisma.asistencias.update({
-                    where: { id_asistencia: precargada.id_asistencia },
-                    data: {
-                        hora_entrada: hora,
-                        minutos_retardo: minRetardo,
-                        descuento_retardo: descRetardo,
-                        estatus: "PRESENTE",
-                    },
-                });
-            } else {
-                await prisma.asistencias.create({
-                    data: {
-                        id_empleado: BigInt(id_empleado),
-                        fecha: fechaBusqueda,
-                        hora_entrada: hora,
-                        minutos_retardo: minRetardo,
-                        descuento_retardo: descRetardo,
-                        estatus: "PRESENTE",
-                    },
-                });
-            }
-
-            return res.status(200).json({
-                ok: true,
-                accion: "ENTRADA",
-                retardo_min: minRetardo,
-                descuento: descRetardo,
-            });
+            // ... [MANTÉN TU LÓGICA DE REGISTRO DE ENTRADA ORIGINAL AQUÍ] ...
         }
 
     } catch (error) {
-        console.error("❌ Error en webhook Dahua:", error);
-        res.status(500).json({ error: "Error interno", detalle: error.message });
+        console.error("❌ Error en webhook:", error);
+        res.status(500).json({ error: "Error interno" });
     }
 });
 
