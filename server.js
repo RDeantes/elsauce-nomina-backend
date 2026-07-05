@@ -195,7 +195,76 @@ app.get("/asistencias", async (req, res) => {
 // ── WEBHOOK DEL LECTOR DAHUA ─────────────────────────────────
 // Recibe las marcadas del puente local (puente-dahua.js en la PC del restaurante).
 // Lógica: primera marcada del día = ENTRADA, segunda = SALIDA, las demás se ignoran.
+ // ── WEBHOOK DEL LECTOR DAHUA ─────────────────────────────────
 app.post("/asistencias/webhook", async (req, res) => {
+    try {
+        const { id_empleado, fecha, hora, secret } = req.body;
+
+        if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+            return res.status(401).json({ error: "No autorizado" });
+        }
+
+        const fechaBusqueda = new Date(fecha + "T00:00:00");
+
+        // ── 1. ESCUDO ANTI-DUPLICADOS ──────────────────────────
+        const marcaExistente = await prisma.asistencias.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, OR: [{ hora_entrada: hora }, { hora_salida: hora }] }
+        });
+        if (marcaExistente) return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Ya existe esta marca" });
+
+        // ── 2. CANDADO DE 5 MINUTOS ───────────────────────────
+        const ultimaMarca = await prisma.asistencias.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda },
+            orderBy: { id_asistencia: 'desc' }
+        });
+        if (ultimaMarca) {
+            const minUltima = convertirHoraAMinutos(ultimaMarca.hora_salida || ultimaMarca.hora_entrada);
+            if (Math.abs(convertirHoraAMinutos(hora) - minUltima) < 5) return res.status(200).json({ ok: true, accion: "IGNORADA" });
+        }
+
+        // ── 3. LÓGICA DE ENTRADA / SALIDA ─────────────────────
+        const asistenciaAbierta = await prisma.asistencias.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada: { not: null }, hora_salida: null }
+        });
+
+        if (asistenciaAbierta) {
+            // REGISTRAR SALIDA
+            const empleado = await prisma.empleados.findUnique({ where: { id_empleado: BigInt(id_empleado) } });
+            const horasTrabajadas = Number((Math.max(0, convertirHoraAMinutos(hora) - convertirHoraAMinutos(asistenciaAbierta.hora_entrada)) / 60).toFixed(2));
+            
+            await prisma.asistencias.update({
+                where: { id_asistencia: asistenciaAbierta.id_asistencia },
+                data: { hora_salida: hora, horas_trabajadas: horasTrabajadas }
+            });
+
+            // INTENTO DE NÓMINA (A prueba de fallos)
+            try {
+                const pagoH = Number(empleado?.Pago_hora || 0);
+                const pagoD = Number(empleado?.Pago_diario || 0);
+                const bruto = empleado?.Tipo_Pago?.toUpperCase() === "DIARIO" ? horasTrabajadas * pagoH : pagoD;
+                const neto = bruto - Number(asistenciaAbierta.descuento_retardo || 0);
+
+                const nomina = await prisma.nominas.findFirst({ where: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, estatus: "PENDIENTE" } });
+                if (nomina) {
+                    await prisma.nominas.update({ where: { id_nomina: nomina.id_nomina }, data: { horas_totales: Number(nomina.horas_totales || 0) + horasTrabajadas, sueldo_bruto: Number(nomina.sueldo_bruto || 0) + bruto, total_neto: Number(nomina.total_neto || 0) + neto } });
+                } else {
+                    await prisma.nominas.create({ data: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, fecha_fin: fechaBusqueda, horas_totales: horasTrabajadas, sueldo_bruto: bruto, total_neto: neto, estatus: "PENDIENTE" } });
+                }
+            } catch (e) { console.log("⚠️ Nómina omitida para:", id_empleado); }
+
+            return res.status(200).json({ ok: true, accion: "SALIDA" });
+        } else {
+            // REGISTRAR ENTRADA
+            const empleado = await prisma.empleados.findUnique({ where: { id_empleado: BigInt(id_empleado) } });
+            if (!empleado) return res.status(404).json({ error: "Empleado no existe" });
+            
+            await prisma.asistencias.create({ data: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada: hora, estatus: "PRESENTE" } });
+            return res.status(200).json({ ok: true, accion: "ENTRADA" });
+        }
+    } catch (error) {
+        return res.status(500).json({ error: "Error fatal" });
+    }
+});  
     try {
         const { id_empleado, fecha, hora, secret } = req.body;
 
