@@ -195,7 +195,6 @@ app.get("/asistencias", async (req, res) => {
 // ── WEBHOOK DEL LECTOR DAHUA ─────────────────────────────────
 // Recibe las marcadas del puente local (puente-dahua.js en la PC del restaurante).
 // Lógica: primera marcada del día = ENTRADA, segunda = SALIDA, las demás se ignoran.
- // ── WEBHOOK DEL LECTOR DAHUA ─────────────────────────────────
 app.post("/asistencias/webhook", async (req, res) => {
     try {
         const { id_empleado, fecha, hora, secret } = req.body;
@@ -262,99 +261,6 @@ app.post("/asistencias/webhook", async (req, res) => {
             return res.status(200).json({ ok: true, accion: "ENTRADA" });
         }
     } catch (error) {
-        return res.status(500).json({ error: "Error fatal" });
-    }
-});  
-    try {
-        const { id_empleado, fecha, hora, secret } = req.body;
-
-        if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
-            return res.status(401).json({ error: "No autorizado" });
-        }
-
-        const fechaBusqueda = new Date(fecha + "T00:00:00");
-
-        // ── CANDADO DE 5 MINUTOS ──────────────────────────────────
-        // Busca cualquier marca (entrada o salida) hecha hoy para este empleado
-        const ultimaMarca = await prisma.asistencias.findFirst({
-            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda },
-            orderBy: { id_asistencia: 'desc' }
-        });
-
-        if (ultimaMarca) {
-            const ultimaHora = ultimaMarca.hora_salida || ultimaMarca.hora_entrada;
-            const minUltima = convertirHoraAMinutos(ultimaHora);
-            const minActual = convertirHoraAMinutos(hora);
-
-            if (Math.abs(minActual - minUltima) < 5) {
-                console.log(`🛡️ Candado activado: Marcación ignorada (ID: ${id_empleado}). Menos de 5 min.`);
-                return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Doble marcación bloqueada" });
-            }
-        }
-        // ─────────────────────────────────────────────────────────
-
-        // 3. ¿Ya tiene turno completamente cerrado (entrada + salida)?
-        const asistenciaCerrada = await prisma.asistencias.findFirst({
-            where: {
-                id_empleado: BigInt(id_empleado),
-                fecha: fechaBusqueda,
-                hora_entrada: { not: null },
-                hora_salida:  { not: null },
-            },
-        });
-
-        if (asistenciaCerrada) {
-            await prisma.asistencias.create({
-                data: {
-                    id_empleado: BigInt(id_empleado),
-                    fecha: fechaBusqueda,
-                    hora_entrada: hora,
-                    minutos_retardo: 0,
-                    descuento_retardo: 0,
-                    estatus: "PRESENTE",
-                },
-            });
-            return res.status(200).json({ ok: true, accion: "ENTRADA", mensaje: "Nuevo periodo abierto" });
-        }
-
-        // 4. ¿Tiene entrada abierta (sin salida todavía)?
-        const asistenciaAbierta = await prisma.asistencias.findFirst({
-            where: {
-                id_empleado: BigInt(id_empleado),
-                fecha: fechaBusqueda,
-                hora_entrada: { not: null },
-                hora_salida:  null,
-            },
-        });
-
-        if (asistenciaAbierta) {
-            // ── REGISTRAR SALIDA ──────────────────────────────
-            const empleado = await prisma.empleados.findUnique({ where: { id_empleado: BigInt(id_empleado) } });
-            const entradaMin = convertirHoraAMinutos(asistenciaAbierta.hora_entrada);
-            const salidaMin  = convertirHoraAMinutos(hora);
-            let horasCalc    = Math.max(0, salidaMin - entradaMin) / 60;
-
-            if (empleado?.puesto_id === BigInt(10)) {
-                const TOPE = 11 + 40 / 60;
-                if (horasCalc > TOPE) horasCalc = TOPE;
-            }
-
-            const horasTrabajadas = Number(horasCalc.toFixed(2));
-
-            await prisma.asistencias.update({
-                where: { id_asistencia: asistenciaAbierta.id_asistencia },
-                data: { hora_salida: hora, horas_trabajadas: horasTrabajadas },
-            });
-            
-            // (Tu lógica de cálculo de sueldo y nómina sigue aquí abajo igual...)
-            // ... [MANTÉN EL RESTO DE TU LÓGICA DE NÓMINA ORIGINAL AQUÍ] ...
-            
-            return res.status(200).json({ ok: true, accion: "SALIDA", horas: horasTrabajadas });
-        } else {
-            // ... [MANTÉN TU LÓGICA DE REGISTRO DE ENTRADA ORIGINAL AQUÍ] ...
-        }
-
-    } catch (error) {
         console.error("❌ Error en webhook:", error);
         res.status(500).json({ error: "Error interno" });
     }
@@ -388,7 +294,6 @@ app.post("/asistencias", async (req, res) => {
         const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada);
         let minutosRetardo = Math.max(0, entradaReal - entradaProg);
         let descuentoRetardo = minutosRetardo > 10 ? (minutosRetardo - 10) * 1 : 0;
-        const fechaBusqueda = new Date(fecha.split('T')[0] + "T00:00:00");
 
         const asistenciaAbierta = await prisma.asistencias.findFirst({
             where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_salida: null, hora_entrada: { not: null } }
