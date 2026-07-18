@@ -193,76 +193,197 @@ app.get("/asistencias", async (req, res) => {
 });
 
 // ── WEBHOOK DEL LECTOR DAHUA ─────────────────────────────────
-// Recibe las marcadas del puente local (puente-dahua.js en la PC del restaurante).
-// Lógica: primera marcada del día = ENTRADA, segunda = SALIDA, las demás se ignoran.
 app.post("/asistencias/webhook", async (req, res) => {
     try {
         const { id_empleado, fecha, hora, secret } = req.body;
 
+        // 1. Validar secret
         if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
             return res.status(401).json({ error: "No autorizado" });
         }
 
-        const fechaBusqueda = new Date(fecha + "T00:00:00");
-
-        // ── 1. ESCUDO ANTI-DUPLICADOS ──────────────────────────
-        const marcaExistente = await prisma.asistencias.findFirst({
-            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, OR: [{ hora_entrada: hora }, { hora_salida: hora }] }
-        });
-        if (marcaExistente) return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Ya existe esta marca" });
-
-        // ── 2. CANDADO DE 5 MINUTOS ───────────────────────────
-        const ultimaMarca = await prisma.asistencias.findFirst({
-            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda },
-            orderBy: { id_asistencia: 'desc' }
-        });
-        if (ultimaMarca) {
-            const minUltima = convertirHoraAMinutos(ultimaMarca.hora_salida || ultimaMarca.hora_entrada);
-            if (Math.abs(convertirHoraAMinutos(hora) - minUltima) < 5) return res.status(200).json({ ok: true, accion: "IGNORADA" });
+        // 2. Validar campos mínimos
+        if (!id_empleado || !fecha || !hora) {
+            return res.status(400).json({ error: "Faltan campos: id_empleado, fecha, hora" });
         }
 
-        // ── 3. LÓGICA DE ENTRADA / SALIDA ─────────────────────
+        const fechaBusqueda = new Date(fecha + "T00:00:00");
+
+        // 3. Verificar que el empleado existe y está activo
+        const empleado = await prisma.empleados.findUnique({
+            where: { id_empleado: BigInt(id_empleado) }
+        });
+        if (!empleado || !empleado.activo) {
+            return res.status(404).json({ error: "Empleado no encontrado o inactivo" });
+        }
+
+        // 4. Escudo anti-duplicados: ignorar si ya existe exactamente esta hora
+        const marcaExistente = await prisma.asistencias.findFirst({
+            where: {
+                id_empleado: BigInt(id_empleado),
+                fecha: fechaBusqueda,
+                OR: [{ hora_entrada: hora }, { hora_salida: hora }]
+            }
+        });
+        if (marcaExistente) {
+            console.log(`⏭️  Duplicado exacto ignorado: empleado ${id_empleado} hora ${hora}`);
+            return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Marca duplicada" });
+        }
+
+        // 5. Candado de 5 minutos: ignorar si la última marcada fue hace menos de 5 min
+        const ultimaMarca = await prisma.asistencias.findFirst({
+            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda },
+            orderBy: { id_asistencia: "desc" }
+        });
+        if (ultimaMarca) {
+            const horaReferencia = ultimaMarca.hora_salida || ultimaMarca.hora_entrada;
+            const diffMin = Math.abs(convertirHoraAMinutos(hora) - convertirHoraAMinutos(horaReferencia));
+            if (diffMin < 5) {
+                console.log(`⏱️  Candado 5 min: empleado ${id_empleado}, diff ${diffMin} min, ignorando.`);
+                return res.status(200).json({ ok: true, accion: "IGNORADA", mensaje: "Menos de 5 min desde última marca" });
+            }
+        }
+
+        // 6. ¿Tiene una entrada abierta (sin salida)?
         const asistenciaAbierta = await prisma.asistencias.findFirst({
-            where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada: { not: null }, hora_salida: null }
+            where: {
+                id_empleado: BigInt(id_empleado),
+                fecha: fechaBusqueda,
+                hora_entrada: { not: null },
+                hora_salida: null
+            }
         });
 
         if (asistenciaAbierta) {
-            // REGISTRAR SALIDA
-            const empleado = await prisma.empleados.findUnique({ where: { id_empleado: BigInt(id_empleado) } });
-            const horasTrabajadas = Number((Math.max(0, convertirHoraAMinutos(hora) - convertirHoraAMinutos(asistenciaAbierta.hora_entrada)) / 60).toFixed(2));
-            
+            // ── REGISTRAR SALIDA ──────────────────────────────
+            console.log(`🚪 Salida: empleado ${id_empleado} a las ${hora}`);
+
+            const entradaMin     = convertirHoraAMinutos(asistenciaAbierta.hora_entrada);
+            const salidaMin      = convertirHoraAMinutos(hora);
+            let   horasCalculadas = Math.max(0, salidaMin - entradaMin) / 60;
+
+            // Tope repartidores (puesto_id = 10)
+            if (empleado.puesto_id === BigInt(10)) {
+                const TOPE = 11 + 40 / 60;
+                if (horasCalculadas > TOPE) {
+                    horasCalculadas = TOPE;
+                    console.log("⚠️ Tope de repartidor aplicado");
+                }
+            }
+
+            const horasTrabajadas = Number(horasCalculadas.toFixed(2));
+
             await prisma.asistencias.update({
                 where: { id_asistencia: asistenciaAbierta.id_asistencia },
                 data: { hora_salida: hora, horas_trabajadas: horasTrabajadas }
             });
 
-            // INTENTO DE NÓMINA (A prueba de fallos)
+            // Acumular en nómina
             try {
-                const pagoH = Number(empleado?.Pago_hora || 0);
-                const pagoD = Number(empleado?.Pago_diario || 0);
-                const bruto = empleado?.Tipo_Pago?.toUpperCase() === "DIARIO" ? horasTrabajadas * pagoH : pagoD;
-                const neto = bruto - Number(asistenciaAbierta.descuento_retardo || 0);
+                const bruto = empleado.Tipo_Pago?.toUpperCase() === "DIARIO"
+                    ? horasTrabajadas * Number(empleado.Pago_hora || 0)
+                    : Number(empleado.Pago_diario || 0);
+                const descuento = Number(asistenciaAbierta.descuento_retardo || 0);
+                const neto      = bruto - descuento;
 
-                const nomina = await prisma.nominas.findFirst({ where: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, estatus: "PENDIENTE" } });
+                const nomina = await prisma.nominas.findFirst({
+                    where: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, estatus: "PENDIENTE" }
+                });
+
                 if (nomina) {
-                    await prisma.nominas.update({ where: { id_nomina: nomina.id_nomina }, data: { horas_totales: Number(nomina.horas_totales || 0) + horasTrabajadas, sueldo_bruto: Number(nomina.sueldo_bruto || 0) + bruto, total_neto: Number(nomina.total_neto || 0) + neto } });
+                    await prisma.nominas.update({
+                        where: { id_nomina: nomina.id_nomina },
+                        data: {
+                            horas_totales:              Number(nomina.horas_totales || 0) + horasTrabajadas,
+                            sueldo_bruto:               Number(nomina.sueldo_bruto  || 0) + bruto,
+                            total_descuentos_retardo:   Number(nomina.total_descuentos_retardo || 0) + descuento,
+                            total_neto:                 Number(nomina.total_neto    || 0) + neto,
+                            fecha_fin:                  fechaBusqueda,
+                        }
+                    });
                 } else {
-                    await prisma.nominas.create({ data: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, fecha_fin: fechaBusqueda, horas_totales: horasTrabajadas, sueldo_bruto: bruto, total_neto: neto, estatus: "PENDIENTE" } });
+                    await prisma.nominas.create({
+                        data: {
+                            id_empleado:              BigInt(id_empleado),
+                            fecha_inicio:             fechaBusqueda,
+                            fecha_fin:                fechaBusqueda,
+                            dias_trabajados:          1,
+                            horas_totales:            horasTrabajadas,
+                            sueldo_bruto:             bruto,
+                            total_descuentos_retardo: descuento,
+                            total_neto:               neto,
+                            estatus:                  "PENDIENTE",
+                        }
+                    });
                 }
-            } catch (e) { console.log("⚠️ Nómina omitida para:", id_empleado); }
+            } catch (e) {
+                console.error("⚠️ Error acumulando nómina:", e.message);
+            }
 
-            return res.status(200).json({ ok: true, accion: "SALIDA" });
+            return res.status(200).json({ ok: true, accion: "SALIDA", horas: horasTrabajadas });
+
         } else {
-            // REGISTRAR ENTRADA
-            const empleado = await prisma.empleados.findUnique({ where: { id_empleado: BigInt(id_empleado) } });
-            if (!empleado) return res.status(404).json({ error: "Empleado no existe" });
-            
-            await prisma.asistencias.create({ data: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada: hora, estatus: "PRESENTE" } });
-            return res.status(200).json({ ok: true, accion: "ENTRADA" });
+            // ── REGISTRAR ENTRADA (primera vez o regreso) ─────
+            console.log(`🟢 Entrada: empleado ${id_empleado} a las ${hora}`);
+
+            // Calcular retardo solo en la primera entrada del día
+            const hayEntradasPrevias = await prisma.asistencias.findFirst({
+                where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada: { not: null } }
+            });
+
+            let minRetardo  = 0;
+            let descRetardo = 0;
+
+            if (!hayEntradasPrevias) {
+                // Primera entrada: calcular retardo
+                const entradaReal = convertirHoraAMinutos(hora);
+                const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada || "00:00");
+                minRetardo  = Math.max(0, entradaReal - entradaProg);
+                descRetardo = minRetardo > 10 ? (minRetardo - 10) * 1 : 0;
+            }
+
+            // Actualizar registro precargado (FALTA/DESCANSO) si existe y es la primera entrada
+            if (!hayEntradasPrevias) {
+                const precargada = await prisma.asistencias.findFirst({
+                    where: {
+                        id_empleado: BigInt(id_empleado),
+                        fecha: fechaBusqueda,
+                        estatus: { in: ["FALTA", "DESCANSO", "JUSTIFICADA"] }
+                    }
+                });
+
+                if (precargada) {
+                    await prisma.asistencias.update({
+                        where: { id_asistencia: precargada.id_asistencia },
+                        data: {
+                            hora_entrada:      hora,
+                            minutos_retardo:   minRetardo,
+                            descuento_retardo: descRetardo,
+                            estatus:           "PRESENTE",
+                        }
+                    });
+                    return res.status(200).json({ ok: true, accion: "ENTRADA", retardo_min: minRetardo, descuento: descRetardo });
+                }
+            }
+
+            // Crear nuevo registro (primera entrada sin precarga, o regreso)
+            await prisma.asistencias.create({
+                data: {
+                    id_empleado:       BigInt(id_empleado),
+                    fecha:             fechaBusqueda,
+                    hora_entrada:      hora,
+                    minutos_retardo:   minRetardo,
+                    descuento_retardo: descRetardo,
+                    estatus:           "PRESENTE",
+                }
+            });
+
+            return res.status(200).json({ ok: true, accion: "ENTRADA", retardo_min: minRetardo, descuento: descRetardo });
         }
+
     } catch (error) {
-        console.error("❌ Error en webhook:", error);
-        res.status(500).json({ error: "Error interno" });
+        console.error("❌ Error en webhook Dahua:", error);
+        res.status(500).json({ error: "Error interno", detalle: error.message });
     }
 });
 
@@ -277,22 +398,22 @@ app.post("/asistencias", async (req, res) => {
         }
 
         const fechaBusqueda = new Date(fecha.split('T')[0] + "T00:00:00");
+
         const ultimaMarca = await prisma.asistencias.findFirst({
             where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_entrada: { not: null } },
-            orderBy: { id_asistencia: 'desc' }
+            orderBy: { id_asistencia: "desc" }
         });
 
         if (ultimaMarca) {
-            const minUltima = convertirHoraAMinutos(ultimaMarca.hora_entrada);
-            const minActual = convertirHoraAMinutos(hora_entrada);
-            if (Math.abs(minActual - minUltima) < 1) {
+            const diffMin = Math.abs(convertirHoraAMinutos(hora_entrada) - convertirHoraAMinutos(ultimaMarca.hora_entrada));
+            if (diffMin < 1) {
                 return res.status(200).json({ mensaje: "Marcación ignorada: repetida en menos de 1 minuto." });
             }
         }
 
         const entradaReal = convertirHoraAMinutos(hora_entrada);
         const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada);
-        let minutosRetardo = Math.max(0, entradaReal - entradaProg);
+        let minutosRetardo   = Math.max(0, entradaReal - entradaProg);
         let descuentoRetardo = minutosRetardo > 10 ? (minutosRetardo - 10) * 1 : 0;
 
         const asistenciaAbierta = await prisma.asistencias.findFirst({
@@ -308,7 +429,7 @@ app.post("/asistencias", async (req, res) => {
         });
 
         if (asistenciaPrevias) {
-            minutosRetardo = 0;
+            minutosRetardo   = 0;
             descuentoRetardo = 0;
         }
 
@@ -352,7 +473,7 @@ app.put("/asistencias/salida", async (req, res) => {
         }
 
         const entradaMin = convertirHoraAMinutos(asistencia.hora_entrada);
-        const salidaMin = convertirHoraAMinutos(hora_salida);
+        const salidaMin  = convertirHoraAMinutos(hora_salida);
         let horasCalculadas = Math.max(0, salidaMin - entradaMin) / 60;
 
         if (asistencia.empleados.puesto_id === BigInt(10)) {
@@ -370,11 +491,11 @@ app.put("/asistencias/salida", async (req, res) => {
             data: { hora_salida, horas_trabajadas: horasTrabajadas }
         });
 
-        const emp = asistencia.empleados;
-        let bruto = emp.Tipo_Pago?.toUpperCase() === "DIARIO"
+        const emp   = asistencia.empleados;
+        let   bruto = emp.Tipo_Pago?.toUpperCase() === "DIARIO"
                     ? horasTrabajadas * (emp.Pago_hora || 0)
                     : (emp.Pago_diario || 0);
-        const neto = bruto - Number(asistencia.descuento_retardo || 0);
+        const neto  = bruto - Number(asistencia.descuento_retardo || 0);
 
         const nominaExistente = await prisma.nominas.findFirst({
             where: { id_empleado: BigInt(id_empleado), fecha_inicio: fechaBusqueda, estatus: "PENDIENTE" }
@@ -382,45 +503,35 @@ app.put("/asistencias/salida", async (req, res) => {
 
         let recibo;
         if (nominaExistente) {
-            const horasTotalesAcumuladas = Number(nominaExistente.horas_totales || 0) + horasTrabajadas;
-            const sueldoBrutoAcumulado = Number(nominaExistente.sueldo_bruto) + bruto;
-            const totalRetardosAcumulados = Number(nominaExistente.total_descuentos_retardo || 0) + Number(asistencia.descuento_retardo || 0);
-            const totalNetoActualizado = sueldoBrutoAcumulado
-                + Number(nominaExistente.bonos || 0)
-                + Number(nominaExistente.otras_percepciones || 0)
-                - totalRetardosAcumulados
-                - Number(nominaExistente.comidas || 0)
-                - Number(nominaExistente.otras_deducciones || 0);
-
             recibo = await prisma.nominas.update({
                 where: { id_nomina: nominaExistente.id_nomina },
                 data: {
-                    horas_totales: horasTotalesAcumuladas,
-                    sueldo_bruto: sueldoBrutoAcumulado,
-                    total_descuentos_retardo: totalRetardosAcumulados,
-                    total_neto: totalNetoActualizado,
-                    dias_trabajados: nominaExistente.dias_trabajados || 1,
-                    fecha_fin: fechaBusqueda
+                    horas_totales:            Number(nominaExistente.horas_totales || 0) + horasTrabajadas,
+                    sueldo_bruto:             Number(nominaExistente.sueldo_bruto) + bruto,
+                    total_descuentos_retardo: Number(nominaExistente.total_descuentos_retardo || 0) + Number(asistencia.descuento_retardo || 0),
+                    total_neto:               Number(nominaExistente.total_neto || 0) + neto,
+                    dias_trabajados:          nominaExistente.dias_trabajados || 1,
+                    fecha_fin:                fechaBusqueda
                 }
             });
         } else {
             recibo = await prisma.nominas.create({
                 data: {
-                    id_empleado: BigInt(id_empleado),
-                    fecha_inicio: fechaBusqueda,
-                    fecha_fin: fechaBusqueda,
-                    dias_trabajados: 1,
-                    horas_totales: horasTrabajadas,
-                    sueldo_bruto: bruto,
+                    id_empleado:              BigInt(id_empleado),
+                    fecha_inicio:             fechaBusqueda,
+                    fecha_fin:                fechaBusqueda,
+                    dias_trabajados:          1,
+                    horas_totales:            horasTrabajadas,
+                    sueldo_bruto:             bruto,
                     total_descuentos_retardo: asistencia.descuento_retardo || 0,
-                    total_neto: neto,
-                    estatus: "PENDIENTE"
+                    total_neto:               neto,
+                    estatus:                  "PENDIENTE"
                 }
             });
         }
 
         res.json(convertirBigInt({
-            mensaje: "¡Salida marcada! (Tope aplicado si corresponde)",
+            mensaje: "¡Salida marcada!",
             horas_registradas: horasTrabajadas,
             nomina_generada: recibo
         }));
@@ -467,7 +578,7 @@ app.post("/nominas/incidencias", async (req, res) => {
 
         if (!nomina) return res.status(404).json({ error: "No hay nómina pendiente ese día." });
 
-        let dataUpdate = {};
+        let dataUpdate   = {};
         const valorMonto = Number(monto);
 
         if (tipo === "PERCEPCION") {
@@ -478,15 +589,15 @@ app.post("/nominas/incidencias", async (req, res) => {
             else dataUpdate.otras_deducciones = Number(nomina.otras_deducciones || 0) + valorMonto;
         }
 
-        const bonosN = dataUpdate.bonos !== undefined ? dataUpdate.bonos : Number(nomina.bonos || 0);
+        const bonosN = dataUpdate.bonos              !== undefined ? dataUpdate.bonos              : Number(nomina.bonos || 0);
         const perN   = dataUpdate.otras_percepciones !== undefined ? dataUpdate.otras_percepciones : Number(nomina.otras_percepciones || 0);
-        const comN   = dataUpdate.comidas !== undefined ? dataUpdate.comidas : Number(nomina.comidas || 0);
-        const dedN   = dataUpdate.otras_deducciones !== undefined ? dataUpdate.otras_deducciones : Number(nomina.otras_deducciones || 0);
+        const comN   = dataUpdate.comidas            !== undefined ? dataUpdate.comidas            : Number(nomina.comidas || 0);
+        const dedN   = dataUpdate.otras_deducciones  !== undefined ? dataUpdate.otras_deducciones  : Number(nomina.otras_deducciones || 0);
 
         dataUpdate.total_neto = Number(nomina.sueldo_bruto) + bonosN + perN - Number(nomina.total_descuentos_retardo || 0) - comN - dedN;
 
         const actualizada = await prisma.nominas.update({
-            where: { id_nomina: nomina.id_nomina }, 
+            where: { id_nomina: nomina.id_nomina },
             data: dataUpdate
         });
 
@@ -508,8 +619,8 @@ app.get("/nominas/acumulado/:id_empleado", async (req, res) => {
         res.json(convertirBigInt({
             id_empleado,
             recibos_pendientes: pendientes.length,
-            total_acumulado: total.toFixed(2),
-            detalle: pendientes
+            total_acumulado:    total.toFixed(2),
+            detalle:            pendientes
         }));
     } catch (error) {
         res.status(500).json({ error: "Error obteniendo acumulados" });
@@ -520,10 +631,7 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
     try {
         const { id_empleado } = req.params;
 
-        const empleado = await prisma.empleados.findUnique({
-            where: { id_empleado: BigInt(id_empleado) }
-        });
-
+        const empleado = await prisma.empleados.findUnique({ where: { id_empleado: BigInt(id_empleado) } });
         if (!empleado) return res.status(404).json({ error: "Empleado no encontrado" });
 
         let nombreDepto = "No asignado", nombrePuesto = "No asignado";
@@ -546,14 +654,14 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
         let totalBonos = 0, totalComidas = 0, totalOtrasPercepciones = 0, totalOtrasDeducciones = 0;
 
         pendientes.forEach(p => {
-            totalBruto += Number(p.sueldo_bruto);
-            totalRetardos += Number(p.total_descuentos_retardo);
-            totalBonos += Number(p.bonos || 0);
-            totalComidas += Number(p.comidas || 0);
+            totalBruto             += Number(p.sueldo_bruto);
+            totalRetardos          += Number(p.total_descuentos_retardo);
+            totalBonos             += Number(p.bonos || 0);
+            totalComidas           += Number(p.comidas || 0);
             totalOtrasPercepciones += Number(p.otras_percepciones || 0);
-            totalOtrasDeducciones += Number(p.otras_deducciones || 0);
-            totalNeto += Number(p.total_neto);
-            diasPagados += Number(p.dias_trabajados);
+            totalOtrasDeducciones  += Number(p.otras_deducciones || 0);
+            totalNeto              += Number(p.total_neto);
+            diasPagados            += Number(p.dias_trabajados);
         });
 
         if (empleado.Tipo_Pago?.toUpperCase() === "DIARIO") {
@@ -585,8 +693,8 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
                     width: { size: 100, type: WidthType.PERCENTAGE }, borders: sinBordes,
                     rows: [
                         new TableRow({ children: [
-                            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Percepciones:", bold: true })]})] }),
-                            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Deducciones:", bold: true })]})] }),
+                            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Percepciones:", bold: true })] })] }),
+                            new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Deducciones:", bold: true })] })] }),
                         ]}),
                         new TableRow({ children: [
                             new TableCell({ children: [new Paragraph(`Sueldo Bruto: $${totalBruto.toFixed(2)}`)] }),
