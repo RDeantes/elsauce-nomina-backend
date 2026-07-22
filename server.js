@@ -775,7 +775,67 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
 });
 
 // ============================================================
-// 6. LANZAMIENTO DEL SERVIDOR
+// 6. RUTAS DE DESCANSOS
+// ============================================================
+
+// Obtener días de descanso de un empleado
+app.get("/descansos/:id_empleado", async (req, res) => {
+    try {
+        const descansos = await prisma.descansos_empleados.findMany({
+            where: { id_empleado: BigInt(req.params.id_empleado) }
+        });
+        res.json(convertirBigInt(descansos));
+    } catch (error) {
+        res.status(500).json({ error: "Error obteniendo descansos" });
+    }
+});
+
+// Asignar día de descanso a un empleado
+app.post("/descansos", async (req, res) => {
+    try {
+        const { id_empleado, dia_semana } = req.body;
+
+        if (!id_empleado || dia_semana === undefined) {
+            return res.status(400).json({ error: "Faltan campos: id_empleado, dia_semana" });
+        }
+
+        // Verificar que no exista ya ese día para ese empleado
+        const existe = await prisma.descansos_empleados.findFirst({
+            where: { id_empleado: BigInt(id_empleado), dia_semana: parseInt(dia_semana) }
+        });
+
+        if (existe) {
+            return res.status(400).json({ error: "Este día de descanso ya está asignado" });
+        }
+
+        const nuevo = await prisma.descansos_empleados.create({
+            data: {
+                id_empleado: BigInt(id_empleado),
+                dia_semana:  parseInt(dia_semana),
+            }
+        });
+
+        res.json(convertirBigInt(nuevo));
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: "Error asignando descanso" });
+    }
+});
+
+// Eliminar día de descanso
+app.delete("/descansos/:id_descanso", async (req, res) => {
+    try {
+        await prisma.descansos_empleados.delete({
+            where: { id_descansos: parseInt(req.params.id_descanso) }
+        });
+        res.json({ mensaje: "Día de descanso eliminado" });
+    } catch (error) {
+        res.status(500).json({ error: "Error eliminando descanso" });
+    }
+});
+
+// ============================================================
+// 7. LANZAMIENTO DEL SERVIDOR
 // ============================================================
 
 async function startServer() {
