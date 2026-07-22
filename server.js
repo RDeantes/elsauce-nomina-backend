@@ -49,6 +49,12 @@ function convertirHoraAMinutos(hora) {
     return (parseInt(h) * 60) + parseInt(m);
 }
 
+function calcularDescuento(minutosRetardo) {
+    if (minutosRetardo <= 10) return 0;
+    const bloque = Math.ceil((minutosRetardo - 10) / 10);
+    return bloque * 10 + 10;
+}
+
 app.get("/empleados/:id/qr", async (req, res) => {
   try {
     const { id } = req.params;
@@ -339,7 +345,7 @@ app.post("/asistencias/webhook", async (req, res) => {
                 const entradaReal = convertirHoraAMinutos(hora);
                 const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada || "00:00");
                 minRetardo  = Math.max(0, entradaReal - entradaProg);
-                descRetardo = minRetardo > 10 ? (minRetardo - 10) * 1 : 0;
+                descRetardo = calcularDescuento(minRetardo);
             }
 
             // Actualizar registro precargado (FALTA/DESCANSO) si existe y es la primera entrada
@@ -414,7 +420,7 @@ app.post("/asistencias", async (req, res) => {
         const entradaReal = convertirHoraAMinutos(hora_entrada);
         const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada);
         let minutosRetardo   = Math.max(0, entradaReal - entradaProg);
-        let descuentoRetardo = minutosRetardo > 10 ? (minutosRetardo - 10) * 1 : 0;
+        let descuentoRetardo = calcularDescuento(minutosRetardo);
 
         const asistenciaAbierta = await prisma.asistencias.findFirst({
             where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_salida: null, hora_entrada: { not: null } }
