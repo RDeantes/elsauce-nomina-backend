@@ -58,6 +58,7 @@ model empleados {
   hora_programada_entrada String?
   Tipo_Pago               String?
   Pago_diario             Float?                @db.Real
+  tolerancia_extra_domingo Int                  @default(0)
   asistencias             asistencias[]
   descansos_empleados     descansos_empleados[]
   departamentos           departamentos?        @relation(fields: [departamento_id], references: [id_departamento], onDelete: NoAction, onUpdate: NoAction)
