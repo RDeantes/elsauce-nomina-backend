@@ -98,6 +98,7 @@ model nominas {
   otras_deducciones        Float?    @default(0) @db.Real
   total_neto               Decimal   @db.Decimal
   estatus                  String?   @default("PENDIENTE") @db.VarChar
+  fecha_pago               DateTime? @db.Timestamp(6)
   bonos                    Int?      @default(0)
   otras_percepciones       Float?    @default(0) @db.Real
   empleados                empleados @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction)

@@ -772,7 +772,7 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
 
         await prisma.nominas.updateMany({
             where: { id_empleado: BigInt(id_empleado), estatus: "PENDIENTE" },
-            data: { estatus: "PAGADO" }
+            data: { estatus: "PAGADO", fecha_pago: new Date() }
         });
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -782,6 +782,25 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
     } catch (error) {
         console.error("Error imprimiendo formato:", error);
         res.status(500).json({ error: "Hubo un error generando tu recibo." });
+    }
+});
+
+// Historial de pagos: todas las nóminas PAGADO (más recientes primero).
+// Los pagos anteriores a esta función no tienen fecha_pago (viene null).
+app.get("/nominas/historial", async (req, res) => {
+    try {
+        const pagadas = await prisma.nominas.findMany({
+            where: { estatus: "PAGADO" },
+            include: { empleados: { select: { nombre: true, apellido_paterno: true, apellido_materno: true } } },
+            orderBy: [
+                { fecha_pago: { sort: "desc", nulls: "last" } },
+                { fecha_fin: "desc" }
+            ]
+        });
+        res.json(convertirBigInt(pagadas));
+    } catch (error) {
+        console.error("Error historial:", error);
+        res.status(500).json({ error: "Error obteniendo el historial de pagos" });
     }
 });
 
