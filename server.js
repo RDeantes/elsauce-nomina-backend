@@ -49,8 +49,19 @@ function convertirHoraAMinutos(hora) {
     return (parseInt(h) * 60) + parseInt(m);
 }
 
-function calcularDescuento(minutosRetardo) {
-    if (minutosRetardo <= 10) return 0;
+// Tolerancia en minutos: 10 normalmente. Los domingos se le suman los minutos
+// extra que tenga el empleado en "tolerancia_extra_domingo" (0 si no tiene).
+function toleranciaParaFecha(empleado, fecha) {
+    const BASE = 10;
+    const esDomingo = fecha.getDay() === 0;
+    const extra = esDomingo ? Number(empleado?.tolerancia_extra_domingo || 0) : 0;
+    return BASE + extra;
+}
+
+// Con retardo dentro de la tolerancia no hay descuento. Fuera de ella se
+// descuenta igual que siempre (11-20 min = $20, 21-30 = $30, etc.).
+function calcularDescuento(minutosRetardo, tolerancia = 10) {
+    if (minutosRetardo <= tolerancia) return 0;
     const bloque = Math.ceil((minutosRetardo - 10) / 10);
     return bloque * 10 + 10;
 }
@@ -345,7 +356,7 @@ app.post("/asistencias/webhook", async (req, res) => {
                 const entradaReal = convertirHoraAMinutos(hora);
                 const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada || "00:00");
                 minRetardo  = Math.max(0, entradaReal - entradaProg);
-                descRetardo = calcularDescuento(minRetardo);
+                descRetardo = calcularDescuento(minRetardo, toleranciaParaFecha(empleado, fechaBusqueda));
             }
 
             // Actualizar registro precargado (FALTA/DESCANSO) si existe y es la primera entrada
@@ -420,7 +431,7 @@ app.post("/asistencias", async (req, res) => {
         const entradaReal = convertirHoraAMinutos(hora_entrada);
         const entradaProg = convertirHoraAMinutos(empleado.hora_programada_entrada);
         let minutosRetardo   = Math.max(0, entradaReal - entradaProg);
-        let descuentoRetardo = calcularDescuento(minutosRetardo);
+        let descuentoRetardo = calcularDescuento(minutosRetardo, toleranciaParaFecha(empleado, fechaBusqueda));
 
         const asistenciaAbierta = await prisma.asistencias.findFirst({
             where: { id_empleado: BigInt(id_empleado), fecha: fechaBusqueda, hora_salida: null, hora_entrada: { not: null } }
