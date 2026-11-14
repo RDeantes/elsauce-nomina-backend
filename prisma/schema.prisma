@@ -84,6 +84,15 @@ model puestos {
   empleados  empleados[]
 }
 
+model usuarios {
+  id_usuario BigInt    @id @default(autoincrement())
+  username   String    @unique @db.VarChar
+  password   String    @db.VarChar
+  rol        String    @db.VarChar
+  activo     Boolean?  @default(true)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+}
+
 model nominas {
   id_nomina                Int       @id @default(autoincrement())
   id_empleado              BigInt

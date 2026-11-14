@@ -22,6 +22,92 @@ app.use(cors({
 
 app.use(express.json());
 
+// ============================================================
+// 0. AUTENTICACIÓN Y PERMISOS
+// ============================================================
+// - Login con usuario/contraseña (tabla "usuarios") -> token JWT de 12 horas.
+// - AUTH_ENFORCED=true (variable de Railway) activa la protección de rutas.
+//   Mientras no esté en "true" todo funciona como antes (para desplegar sin romper nada).
+// - El webhook del lector (/asistencias/webhook) siempre es público: ya tiene su propio secret.
+
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const AUTH_ENFORCED = process.env.AUTH_ENFORCED === "true";
+// ADMIN: acceso total (incluye Usuarios). GERENTE: encargada y dueña, todas las pestañas menos Usuarios.
+// La sesión dura 30 días y se renueva sola cada vez que se abre el sistema (/auth/me),
+// así que quien lo usa seguido no tiene que volver a iniciar sesión.
+const DIAS_SESION = Number(process.env.SESSION_DAYS) || 30;
+const ROLES_VALIDOS = ["ADMIN", "GERENTE", "CAJERA", "MESERAS"];
+
+const RUTAS_PUBLICAS = new Set([
+    "GET /",
+    "POST /auth/login",
+    "POST /asistencias/webhook",
+]);
+
+// ADMIN puede todo. Las demás rutas, por defecto, están prohibidas para los otros roles.
+function rutaPermitida(rol, metodo, ruta) {
+    if (rol === "ADMIN") return true;
+    if (ruta === "/auth/me") return true;
+
+    // Encargada y dueña: todo, excepto la administración de usuarios
+    if (rol === "GERENTE") return !ruta.startsWith("/usuarios");
+
+    // Lista de empleados (solo lectura; para no-ADMIN se devuelven pocos campos)
+    if (metodo === "GET" && ruta === "/empleados") return rol === "CAJERA" || rol === "MESERAS";
+
+    if (rol === "CAJERA") {
+        // Pestañas: Asistencias, Nómina (incluye Historial)
+        return ruta.startsWith("/asistencias") || ruta.startsWith("/nominas");
+    }
+    if (rol === "MESERAS") {
+        // Pestaña: Descansos
+        return ruta.startsWith("/descansos");
+    }
+    return false;
+}
+
+// Cache corto del usuario para respetar cambios de rol / desactivaciones sin pegarle a la BD en cada llamada.
+const cacheUsuarios = new Map();
+async function usuarioVigente(id) {
+    const hit = cacheUsuarios.get(id);
+    if (hit && Date.now() - hit.ts < 30000) return hit.u;
+    const u = await prisma.usuarios.findUnique({ where: { id_usuario: BigInt(id) } });
+    const dato = u && u.activo ? { id: Number(u.id_usuario), username: u.username, rol: u.rol } : null;
+    cacheUsuarios.set(id, { ts: Date.now(), u: dato });
+    return dato;
+}
+
+app.use(async (req, res, next) => {
+    try {
+        if (req.method === "OPTIONS") return next();
+        if (RUTAS_PUBLICAS.has(`${req.method} ${req.path}`)) return next();
+
+        const h = req.headers.authorization || "";
+        const token = h.startsWith("Bearer ") ? h.slice(7) : null;
+        if (token && JWT_SECRET) {
+            try {
+                const dec = jwt.verify(token, JWT_SECRET);
+                req.usuario = await usuarioVigente(dec.id);
+            } catch (e) {
+                req.usuario = null;
+            }
+        }
+
+        if (!AUTH_ENFORCED) return next();
+        if (!req.usuario) return res.status(401).json({ error: "No autenticado" });
+        if (!rutaPermitida(req.usuario.rol, req.method, req.path)) {
+            return res.status(403).json({ error: "No tienes permiso para esto" });
+        }
+        next();
+    } catch (error) {
+        console.error("Error en autenticación:", error);
+        res.status(500).json({ error: "Error de autenticación" });
+    }
+});
+
 app.get("/", (req, res) => {
     res.json({ mensaje: "Backend funcionando 🚀" });
 });
@@ -126,6 +212,19 @@ cron.schedule('0 1 * * *', async () => {
 app.get("/empleados", async (req, res) => {
     try {
         const empleados = await prisma.empleados.findMany();
+        if (req.usuario && req.usuario.rol !== "ADMIN" && req.usuario.rol !== "GERENTE") {
+            // Sin datos personales: solo lo necesario para listar nombres
+            const basicos = empleados.map(e => ({
+                id_empleado: e.id_empleado,
+                nombre: e.nombre,
+                apellido_paterno: e.apellido_paterno,
+                apellido_materno: e.apellido_materno,
+                activo: e.activo,
+                departamento_id: e.departamento_id,
+                puesto_id: e.puesto_id,
+            }));
+            return res.json(convertirBigInt(basicos));
+        }
         res.json(convertirBigInt(empleados));
     } catch (error) {
         res.status(500).json({ error: "Error obteniendo empleados" });
@@ -194,13 +293,20 @@ app.put("/empleados/:id", async (req, res) => {
 
 app.get("/asistencias", async (req, res) => {
     try {
-        const { fecha } = req.query;
+        // ?fecha=YYYY-MM-DD (un día)  o  ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD (rango)
+        const { fecha, desde, hasta } = req.query;
+        let where = undefined;
+        if (fecha) {
+            where = { fecha: { gte: new Date(fecha + "T00:00:00"), lte: new Date(fecha + "T23:59:59") } };
+        } else if (desde || hasta) {
+            where = { fecha: {} };
+            if (desde) where.fecha.gte = new Date(desde + "T00:00:00");
+            if (hasta) where.fecha.lte = new Date(hasta + "T23:59:59");
+        }
         const asistencias = await prisma.asistencias.findMany({
-            where: fecha
-                ? { fecha: { gte: new Date(fecha + "T00:00:00"), lte: new Date(fecha + "T23:59:59") } }
-                : undefined,
+            where,
             include: { empleados: true },
-            orderBy: { hora_entrada: "asc" },
+            orderBy: [{ fecha: "asc" }, { hora_entrada: "asc" }],
         });
         res.json(convertirBigInt(asistencias));
     } catch (error) {
@@ -801,6 +907,151 @@ app.get("/nominas/historial", async (req, res) => {
     } catch (error) {
         console.error("Error historial:", error);
         res.status(500).json({ error: "Error obteniendo el historial de pagos" });
+    }
+});
+
+// ============================================================
+// 5B. LOGIN Y USUARIOS
+// ============================================================
+
+// Freno a intentos fallidos: 5 fallos seguidos -> bloqueo de 15 minutos (por usuario)
+const intentosLogin = new Map();
+const MAX_INTENTOS = 5;
+const BLOQUEO_MS = 15 * 60 * 1000;
+
+async function verificarPassword(usuario, passwordIngresado) {
+    const guardado = usuario.password || "";
+    if (guardado.startsWith("$2")) {
+        return bcrypt.compare(passwordIngresado, guardado);
+    }
+    // Contraseña vieja en texto plano: si coincide, se convierte a hash automáticamente.
+    if (guardado === passwordIngresado) {
+        const hash = await bcrypt.hash(passwordIngresado, 10);
+        await prisma.usuarios.update({ where: { id_usuario: usuario.id_usuario }, data: { password: hash } });
+        return true;
+    }
+    return false;
+}
+
+app.post("/auth/login", async (req, res) => {
+    try {
+        if (!JWT_SECRET) return res.status(500).json({ error: "Falta configurar JWT_SECRET en el servidor" });
+
+        const { username, password } = req.body || {};
+        if (!username || !password) return res.status(400).json({ error: "Escribe usuario y contraseña" });
+
+        const clave = String(username).toLowerCase();
+        const registro = intentosLogin.get(clave);
+        if (registro && registro.bloqueadoHasta && registro.bloqueadoHasta > Date.now()) {
+            return res.status(429).json({ error: "Demasiados intentos. Espera unos minutos e inténtalo de nuevo." });
+        }
+
+        const usuario = await prisma.usuarios.findFirst({
+            where: { username: { equals: String(username), mode: "insensitive" } }
+        });
+        const ok = usuario && usuario.activo && await verificarPassword(usuario, String(password));
+
+        if (!ok) {
+            const r = registro && !(registro.bloqueadoHasta && registro.bloqueadoHasta <= Date.now())
+                ? registro : { fallos: 0, bloqueadoHasta: 0 };
+            r.fallos += 1;
+            if (r.fallos >= MAX_INTENTOS) { r.bloqueadoHasta = Date.now() + BLOQUEO_MS; r.fallos = 0; }
+            intentosLogin.set(clave, r);
+            return res.status(401).json({ error: "Usuario o contraseña incorrectos" });
+        }
+
+        intentosLogin.delete(clave);
+        const datos = { id: Number(usuario.id_usuario), username: usuario.username, rol: usuario.rol };
+        const token = jwt.sign(datos, JWT_SECRET, { expiresIn: `${DIAS_SESION}d` });
+        res.json({ token, usuario: datos });
+    } catch (error) {
+        console.error("Error en login:", error);
+        res.status(500).json({ error: "Error iniciando sesión" });
+    }
+});
+
+app.get("/auth/me", (req, res) => {
+    if (!req.usuario) return res.status(401).json({ error: "No autenticado" });
+    // Devuelve un token nuevo para extender la sesión otros 30 días
+    const token = jwt.sign(
+        { id: req.usuario.id, username: req.usuario.username, rol: req.usuario.rol },
+        JWT_SECRET,
+        { expiresIn: `${DIAS_SESION}d` }
+    );
+    res.json({ usuario: req.usuario, token });
+});
+
+// --- Administración de usuarios (solo ADMIN, por la regla de permisos) ---
+
+app.get("/usuarios", async (req, res) => {
+    try {
+        const lista = await prisma.usuarios.findMany({
+            select: { id_usuario: true, username: true, rol: true, activo: true, created_at: true },
+            orderBy: { id_usuario: "asc" }
+        });
+        res.json(convertirBigInt(lista));
+    } catch (error) {
+        res.status(500).json({ error: "Error obteniendo usuarios" });
+    }
+});
+
+app.post("/usuarios", async (req, res) => {
+    try {
+        const { username, password, rol } = req.body || {};
+        const nombre = String(username || "").trim();
+        if (!nombre) return res.status(400).json({ error: "Falta el nombre de usuario" });
+        if (!password || String(password).length < 6) return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
+        if (!ROLES_VALIDOS.includes(rol)) return res.status(400).json({ error: "Rol inválido" });
+
+        const existe = await prisma.usuarios.findFirst({ where: { username: { equals: nombre, mode: "insensitive" } } });
+        if (existe) return res.status(400).json({ error: "Ya existe un usuario con ese nombre" });
+
+        const hash = await bcrypt.hash(String(password), 10);
+        const nuevo = await prisma.usuarios.create({
+            data: { username: nombre, password: hash, rol, activo: true },
+            select: { id_usuario: true, username: true, rol: true, activo: true }
+        });
+        res.json(convertirBigInt(nuevo));
+    } catch (error) {
+        console.error("Error creando usuario:", error);
+        res.status(500).json({ error: "Error creando usuario" });
+    }
+});
+
+app.put("/usuarios/:id", async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        const { password, rol, activo } = req.body || {};
+        const actual = await prisma.usuarios.findUnique({ where: { id_usuario: BigInt(id) } });
+        if (!actual) return res.status(404).json({ error: "Usuario no encontrado" });
+
+        const data = {};
+        if (password !== undefined && password !== "") {
+            if (String(password).length < 6) return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
+            data.password = await bcrypt.hash(String(password), 10);
+        }
+        if (rol !== undefined) {
+            if (!ROLES_VALIDOS.includes(rol)) return res.status(400).json({ error: "Rol inválido" });
+            data.rol = rol;
+        }
+        if (activo !== undefined) data.activo = Boolean(activo);
+
+        // Que nunca te quedes sin un ADMIN activo
+        const dejaDeSerAdminActivo = actual.rol === "ADMIN" && actual.activo &&
+            ((data.rol && data.rol !== "ADMIN") || data.activo === false);
+        if (dejaDeSerAdminActivo) {
+            const otros = await prisma.usuarios.count({
+                where: { rol: "ADMIN", activo: true, id_usuario: { not: BigInt(id) } }
+            });
+            if (otros === 0) return res.status(400).json({ error: "Debe quedar al menos un ADMIN activo" });
+        }
+
+        await prisma.usuarios.update({ where: { id_usuario: BigInt(id) }, data });
+        cacheUsuarios.delete(id);
+        res.json({ mensaje: "Usuario actualizado" });
+    } catch (error) {
+        console.error("Error actualizando usuario:", error);
+        res.status(500).json({ error: "Error actualizando usuario" });
     }
 });
 
