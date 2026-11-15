@@ -793,6 +793,26 @@ app.post("/nominas/imprimir-y-pagar/:id_empleado", async (req, res) => {
             diasPagados = pendientes.length;
         }
 
+        // Formato ticket (impresora térmica): devuelve los datos y el frontend arma el ticket
+        if (req.query.formato === "ticket") {
+            await prisma.nominas.updateMany({
+                where: { id_empleado: BigInt(id_empleado), estatus: "PENDIENTE" },
+                data: { estatus: "PAGADO", fecha_pago: new Date() }
+            });
+            return res.json({
+                empleado: `${empleado.nombre} ${empleado.apellido_paterno} ${empleado.apellido_materno || ""}`.trim(),
+                curp: empleado.curp || "",
+                tipo_pago: empleado.Tipo_Pago || "",
+                departamento: nombreDepto,
+                puesto: nombrePuesto,
+                dias_pagados: diasPagados,
+                fecha: new Date().toISOString(),
+                bruto: totalBruto, bonos: totalBonos, otras_percepciones: totalOtrasPercepciones,
+                retardos: totalRetardos, comidas: totalComidas, otras_deducciones: totalOtrasDeducciones,
+                neto: totalNeto
+            });
+        }
+
         const crearBloqueRecibo = () => {
             const sinBordes = {
                 top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE },
