@@ -135,17 +135,19 @@ function convertirHoraAMinutos(hora) {
     return (parseInt(h) * 60) + parseInt(m);
 }
 
-// Tolerancia en minutos: 10 normalmente. Los domingos se le suman los minutos
-// extra que tenga el empleado en "tolerancia_extra_domingo" (0 si no tiene).
+// Tolerancia en minutos: la de cada empleado ("tolerancia_base", 10 por defecto;
+// puede ser 0). Los domingos se le suman los minutos extra que tenga en
+// "tolerancia_extra_domingo" (0 si no tiene).
 function toleranciaParaFecha(empleado, fecha) {
-    const BASE = 10;
+    const BASE = Number(empleado?.tolerancia_base ?? 10);
     const esDomingo = fecha.getDay() === 0;
     const extra = esDomingo ? Number(empleado?.tolerancia_extra_domingo || 0) : 0;
     return BASE + extra;
 }
 
 // Con retardo dentro de la tolerancia no hay descuento. Fuera de ella se
-// descuenta igual que siempre (11-20 min = $20, 21-30 = $30, etc.).
+// descuenta igual que siempre, por bloques de 10 min: 1-10 = $10, 11-20 = $20,
+// 21-30 = $30, etc. (con tolerancia 10 el primer bloque queda sin descuento).
 function calcularDescuento(minutosRetardo, tolerancia = 10) {
     if (minutosRetardo <= tolerancia) return 0;
     const bloque = Math.ceil((minutosRetardo - 10) / 10);
