@@ -213,7 +213,9 @@ cron.schedule('0 1 * * *', async () => {
 
 app.get("/empleados", async (req, res) => {
     try {
-        const empleados = await prisma.empleados.findMany();
+        // ADMIN ve todos (activos e inactivos); el resto solo los activos
+        const esAdmin = !req.usuario || req.usuario.rol === "ADMIN";
+        const empleados = await prisma.empleados.findMany(esAdmin ? {} : { where: { activo: true } });
         if (req.usuario && req.usuario.rol !== "ADMIN" && req.usuario.rol !== "GERENTE") {
             // Sin datos personales: solo lo necesario para listar nombres
             const basicos = empleados.map(e => ({
